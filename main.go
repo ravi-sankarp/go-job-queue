@@ -10,15 +10,17 @@ func main() {
 
 	jobsMux := http.NewServeMux()
 
-	jobsMux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Created Jobs")
-	})
-	jobsMux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello Jobs")
-	})
+	jobsMux.HandleFunc("POST /", createJob)
+	jobsMux.HandleFunc("GET /", getJobs)
+	jobsMux.HandleFunc("GET /:id", getJobById)
 
 	mainMux := http.NewServeMux()
-	mainMux.Handle("/api/v1/jobs/", http.StripPrefix("/api/v1/jobs", jobsMux))
+	mainMux.Handle("/jobs/", http.StripPrefix("/jobs", jobsMux))
+
+	connectToDb()
+	fmt.Println("Connected to Database")
+
+	seedTables()
 	fmt.Println("Listening on port 8000")
 	log.Fatal(http.ListenAndServe(":8000", mainMux))
 }

@@ -1,4 +1,4 @@
-module go-job-queue
+module github.com/ravi-sankarp/go-job-queue
 
 go 1.25.6
 

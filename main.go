@@ -4,23 +4,26 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/ravi-sankarp/go-job-queue/db"
+	"github.com/ravi-sankarp/go-job-queue/scheduler"
 )
 
 func main() {
 
 	jobsMux := http.NewServeMux()
 
-	jobsMux.HandleFunc("POST /", createJob)
-	jobsMux.HandleFunc("GET /", getJobs)
-	jobsMux.HandleFunc("GET /:id", getJobById)
+	jobsMux.HandleFunc("POST /", scheduler.CreateJob)
+	jobsMux.HandleFunc("GET /", scheduler.GetJobs)
 
 	mainMux := http.NewServeMux()
 	mainMux.Handle("/jobs/", http.StripPrefix("/jobs", jobsMux))
 
-	connectToDb()
+	db.ConnectToDb()
 	fmt.Println("Connected to Database")
 
-	seedTables()
+	db.SeedTables()
+
 	fmt.Println("Listening on port 8000")
 	log.Fatal(http.ListenAndServe(":8000", mainMux))
 }

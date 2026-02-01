@@ -7,6 +7,7 @@ import (
 
 	"github.com/ravi-sankarp/go-job-queue/db"
 	"github.com/ravi-sankarp/go-job-queue/scheduler"
+	"github.com/ravi-sankarp/go-job-queue/workers"
 )
 
 func main() {
@@ -24,6 +25,8 @@ func main() {
 
 	db.SeedTables()
 
+	fmt.Println("Starting workers")
+	workers.Start()
 	fmt.Println("Listening on port 8000")
 	log.Fatal(http.ListenAndServe(":8000", mainMux))
 }

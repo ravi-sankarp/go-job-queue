@@ -24,12 +24,12 @@ type queue struct {
 }
 
 func (q *queue) dequeue() scheduler.Job {
-	if q.len() == 0{
+	if q.len() == 0 {
 		return nil
 	}
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	job:= q.jobs[0]
+	job := q.jobs[0]
 	q.jobs = q.jobs[1:]
 	return job
 }
@@ -60,29 +60,29 @@ func pollJobs(q *queue) {
 	}
 }
 
-func updateJob()error{
-	return  nil
+func updateJob() error {
+	return nil
 }
 
 func worker(q *queue) {
 	for {
-			job := q.dequeue()
-			if job ==nil{
-				continue
-			}
-			req, err:=http.NewRequest(job.Method, job.Endpoint, job.Payload)
-
-			if err!=nil{
-				updateJob()
-				continue
-			}
-			resp, err:=http.DefaultClient.Do(req)
-			if err!=nil {
-				updateJob()
-				continue
-			}
-			defer resp.Body.Close()
+		job := q.dequeue()
+		if job == nil {
+			continue
 		}
+		req, err := http.NewRequest(job.Method, job.Endpoint, job.Payload)
+
+		if err != nil {
+			updateJob()
+			continue
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			updateJob()
+			continue
+		}
+		defer resp.Body.Close()
+
 	}
 }
 

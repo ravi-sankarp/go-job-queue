@@ -27,6 +27,7 @@ type DbJob struct {
 	Created_on   string
 	Status       string
 	Retries      sql.NullInt32
+	Error_Info   sql.NullString
 	Updated_on   sql.NullString
 }
 
@@ -40,6 +41,7 @@ type Job struct {
 	Created_on   string `json:"created_on"`
 	Status       string `json:"status"`
 	Retries      int    `json:"retries"`
+	Error_Info   string `json.error_info`
 	Updated_on   string `json:"updated_on"`
 }
 type Response struct {
@@ -55,7 +57,7 @@ type DbRow interface {
 func ParseJobRow(row DbRow) (Job, error) {
 	var job DbJob
 	if err := row.Scan(&job.Id, &job.Title, &job.Endpoint, &job.Method, &job.Payload,
-		&job.Scheduled_at, &job.Created_on, &job.Status, &job.Retries, &job.Updated_on); err != nil {
+		&job.Scheduled_at, &job.Created_on, &job.Status, &job.Retries, &job.Error_Info, &job.Updated_on); err != nil {
 		return Job{}, err
 	}
 	finalJob := Job{
@@ -68,6 +70,7 @@ func ParseJobRow(row DbRow) (Job, error) {
 		Created_on:   job.Created_on,
 		Status:       job.Status,
 		Retries:      int(job.Retries.Int32),
+		Error_Info:   job.Error_Info.String,
 		Updated_on:   job.Updated_on.String,
 	}
 	return finalJob, nil
@@ -98,7 +101,7 @@ func GetJobs(w http.ResponseWriter, r *http.Request) {
 
 	if jobId != "" {
 		row := db.GetDb().QueryRow(`SELECT id, title, endpoint, method, payload, scheduled_at,
-		created_on, status, retries, updated_on  FROM jobs WHERE id = ?`, jobId)
+		created_on, status, retries, error_info, updated_on  FROM jobs WHERE id = ?`, jobId)
 		if row.Err() != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(Response{Error: row.Err().Error(), Success: false})
@@ -122,7 +125,7 @@ func GetJobs(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 		rows, err := db.GetDb().Query(`SELECT id, title, endpoint, method, payload, scheduled_at,
-		created_on, status, retries, updated_on  FROM jobs`)
+		created_on, status, retries, error_info, updated_on  FROM jobs`)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(Response{Error: err.Error(), Success: false})

@@ -1,7 +1,9 @@
 package workers
 
 import (
+	"bytes"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,11 +13,13 @@ import (
 
 var MAX_WORKERS int = 4
 
+type status string
+
 const (
-	IDLE    string = "IDLE"
-	RUNNING string = "RUNNING"
-	SUCCESS string = "SUCCESS"
-	FAILED  string = "FAILED"
+	IDLE    status = "IDLE"
+	RUNNING status = "RUNNING"
+	SUCCESS status = "SUCCESS"
+	FAILED  status = "FAILED"
 )
 
 type queue struct {
@@ -23,7 +27,7 @@ type queue struct {
 	mutex sync.Mutex
 }
 
-func (q *queue) dequeue() scheduler.Job {
+func (q *queue) dequeue() *scheduler.Job {
 	if q.len() == 0 {
 		return nil
 	}
@@ -31,7 +35,7 @@ func (q *queue) dequeue() scheduler.Job {
 	defer q.mutex.Unlock()
 	job := q.jobs[0]
 	q.jobs = q.jobs[1:]
-	return job
+	return &job
 }
 func (q *queue) len() int {
 	return len(q.jobs)
@@ -42,7 +46,7 @@ func pollJobs(q *queue) {
 	defer ticker.Stop()
 	for {
 		rows, err := db.GetDb().Query(`SELECT id, title, endpoint, method, payload, scheduled_at,
-									   created_on, status, retries, updated_on  FROM jobs
+									   created_on, status, retries, error_info, updated_on  FROM jobs
 									   WHERE scheduled_at <= datetime('now') AND status <> ?`, SUCCESS)
 		if err != nil {
 			panic(err)
@@ -60,8 +64,10 @@ func pollJobs(q *queue) {
 	}
 }
 
-func updateJob() error {
-	return nil
+func updateJob(id int, status status, err string) error {
+	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, error_info = ?, updated_on = datetime('now')
+							   WHERE id = ?`, status, err, id)
+	return error
 }
 
 func worker(q *queue) {
@@ -70,19 +76,25 @@ func worker(q *queue) {
 		if job == nil {
 			continue
 		}
-		req, err := http.NewRequest(job.Method, job.Endpoint, job.Payload)
+
+		req, err := http.NewRequest(job.Method, job.Endpoint, bytes.NewReader([]byte(job.Payload)))
 
 		if err != nil {
-			updateJob()
+			updateJob(job.Id, FAILED, err.Error())
 			continue
 		}
+		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			updateJob()
+			updateJob(job.Id, FAILED, err.Error())
 			continue
 		}
-		defer resp.Body.Close()
-
+		if strings.HasPrefix(resp.Status, "2") == false {
+			resp.Body.Read()
+			updateJob(job.Id, FAILED, err.Error())
+		}
+		updateJob(job.Id, FAILED, err.Error())
+		resp.Body.Close()
 	}
 }
 
@@ -97,5 +109,5 @@ func Start() {
 		jobs: make([]scheduler.Job, 0, MAX_WORKERS),
 	}
 	go pollJobs(q)
-
+	startWorkers(q)
 }

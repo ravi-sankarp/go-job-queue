@@ -25,6 +25,6 @@ func SeedTables() {
 	 	endpoint varchar(50) NOT NULL, method varchar(6) NOT NULL, payload TEXT NOT NULL,
 		scheduled_at TEXT NOT NULL, created_on TEXT NOT NULL DEFAULT(datetime('now')),
 		status VARCHAR(10) NOT NULL CHECK (status IN ('IDLE', 'RUNNING','SUCCESS', 'FAILED' )) DEFAULT 'IDLE',
-		retries SMALLINT, updated_on TEXT)
+		retries SMALLINT, error_info TEXT, updated_on TEXT)
 		`)
 }

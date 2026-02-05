@@ -2,6 +2,8 @@ package workers
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +23,10 @@ const (
 	SUCCESS status = "SUCCESS"
 	FAILED  status = "FAILED"
 )
+
+type HttpResponse struct {
+	message string
+}
 
 type queue struct {
 	jobs  []scheduler.Job
@@ -90,10 +96,19 @@ func worker(q *queue) {
 			continue
 		}
 		if strings.HasPrefix(resp.Status, "2") == false {
-			resp.Body.Read()
-			updateJob(job.Id, FAILED, err.Error())
+			var msg string
+			var result HttpResponse
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				msg = err.Error()
+			}
+			if err := json.Unmarshal(body, &result); err != nil {
+				msg = err.Error()
+			}
+
+			updateJob(job.Id, FAILED, msg)
 		}
-		updateJob(job.Id, FAILED, err.Error())
+		updateJob(job.Id, FAILED, "")
 		resp.Body.Close()
 	}
 }

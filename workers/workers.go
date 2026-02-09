@@ -3,8 +3,10 @@ package workers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +41,9 @@ func (q *queue) dequeue() *scheduler.Job {
 	}
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+	if q.len() == 0 {
+		return nil
+	}
 	job := q.jobs[0]
 	q.jobs = q.jobs[1:]
 	return &job
@@ -50,10 +55,10 @@ func (q *queue) len() int {
 func pollJobs(q *queue) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	for {
+	for range ticker.C {
 		rows, err := db.GetDb().Query(`SELECT id, title, endpoint, method, payload, scheduled_at,
 									   created_on, status, retries, error_info, updated_on  FROM jobs
-									   WHERE scheduled_at <= datetime('now') AND status <> ?`, SUCCESS)
+									   WHERE status <> ? AND scheduled_at <= datetime('now')`, SUCCESS)
 		if err != nil {
 			panic(err)
 		}
@@ -68,9 +73,11 @@ func pollJobs(q *queue) {
 		q.mutex.Unlock()
 		rows.Close()
 	}
+
 }
 
 func updateJob(id int, status status, err string) error {
+	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status))
 	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, error_info = ?, updated_on = datetime('now')
 							   WHERE id = ?`, status, err, id)
 	return error
@@ -82,7 +89,7 @@ func worker(q *queue) {
 		if job == nil {
 			continue
 		}
-
+		fmt.Println("Executing job with title " + job.Title + " with id " + strconv.Itoa(job.Id))
 		req, err := http.NewRequest(job.Method, job.Endpoint, bytes.NewReader([]byte(job.Payload)))
 
 		if err != nil {
@@ -108,7 +115,7 @@ func worker(q *queue) {
 
 			updateJob(job.Id, FAILED, msg)
 		}
-		updateJob(job.Id, FAILED, "")
+		updateJob(job.Id, SUCCESS, "")
 		resp.Body.Close()
 	}
 }

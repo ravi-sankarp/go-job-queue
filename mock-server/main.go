@@ -31,7 +31,7 @@ func main() {
 		}
 	})
 
-	log.Println("mock server listening on :8080")
+	log.Println("mock server listening on :3000")
 	log.Fatal(http.ListenAndServe(":3000", nil))
 
 }

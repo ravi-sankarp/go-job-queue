@@ -20,10 +20,11 @@ var MAX_WORKERS int = 4
 type status string
 
 const (
-	IDLE    status = "IDLE"
-	RUNNING status = "RUNNING"
-	SUCCESS status = "SUCCESS"
-	FAILED  status = "FAILED"
+	IDLE         status        = "IDLE"
+	RUNNING      status        = "RUNNING"
+	SUCCESS      status        = "SUCCESS"
+	FAILED       status        = "FAILED"
+	LOCK_TIMEOUT time.Duration = time.Minute
 )
 
 type HttpResponse struct {
@@ -56,9 +57,17 @@ func pollJobs(q *queue) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		rows, err := db.GetDb().Query(`SELECT id, title, endpoint, method, payload, scheduled_at,
-									   created_on, status, retries, error_info, updated_on  FROM jobs
-									   WHERE status <> ? AND scheduled_at <= datetime('now')`, SUCCESS)
+		rows, err := db.GetDb().Query(`UPDATE jobs
+									  SET locked_at = strftime('%s', 'now')
+									  WHERE id IN
+									  (
+									   SELECT id FROM jobs
+									   WHERE status <> ?
+									   AND scheduled_at <= datetime('now')
+									   AND (locked_at IS NULL OR locked_at < strftime('%s', 'now') - ?)
+									   )
+									   RETURNING id, title, endpoint, method, payload, scheduled_at,
+									   created_on, status, retries, error_info, updated_on`, SUCCESS, LOCK_TIMEOUT)
 		if err != nil {
 			panic(err)
 		}
@@ -68,6 +77,7 @@ func pollJobs(q *queue) {
 			if err != nil {
 				panic(err)
 			}
+			fmt.Println(job)
 			q.jobs = append(q.jobs, job)
 		}
 		q.mutex.Unlock()
@@ -78,7 +88,7 @@ func pollJobs(q *queue) {
 
 func updateJob(id int, status status, err string) error {
 	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status))
-	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, error_info = ?, updated_on = datetime('now')
+	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
 							   WHERE id = ?`, status, err, id)
 	return error
 }

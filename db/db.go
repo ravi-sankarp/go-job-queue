@@ -9,7 +9,7 @@ import (
 var db *sql.DB
 
 func ConnectToDb() {
-	connection, err := sql.Open("sqlite3", "./test.db?_journal_mode=WAL")
+	connection, err := sql.Open("sqlite3", "./data/test.db?_journal_mode=WAL")
 	if err != nil {
 		panic(err)
 	}

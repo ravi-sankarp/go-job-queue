@@ -20,11 +20,11 @@ var MAX_WORKERS int = 4
 type status string
 
 const (
-	IDLE         status        = "IDLE"
-	RUNNING      status        = "RUNNING"
-	SUCCESS      status        = "SUCCESS"
-	FAILED       status        = "FAILED"
-	LOCK_TIMEOUT time.Duration = time.Minute
+	IDLE         status = "IDLE"
+	RUNNING      status = "RUNNING"
+	SUCCESS      status = "SUCCESS"
+	FAILED       status = "FAILED"
+	LOCK_TIMEOUT int    = 60
 )
 
 type HttpResponse struct {
@@ -71,17 +71,25 @@ func pollJobs(q *queue) {
 		if err != nil {
 			panic(err)
 		}
-		q.mutex.Lock()
+
+		parsedRows := make([]scheduler.Job, 0, 20)
 		for rows.Next() {
 			job, err := scheduler.ParseJobRow(rows)
 			if err != nil {
 				panic(err)
 			}
-			fmt.Println(job)
-			q.jobs = append(q.jobs, job)
+			parsedRows = append(parsedRows, job)
 		}
+
+		if err := rows.Err(); err != nil {
+			panic(err)
+		}
+
+		q.mutex.Lock()
+		q.jobs = append(q.jobs, parsedRows...)
 		q.mutex.Unlock()
 		rows.Close()
+
 	}
 
 }
@@ -124,6 +132,7 @@ func worker(q *queue) {
 			}
 
 			updateJob(job.Id, FAILED, msg)
+			continue
 		}
 		updateJob(job.Id, SUCCESS, "")
 		resp.Body.Close()

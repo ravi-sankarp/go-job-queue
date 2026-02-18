@@ -71,7 +71,6 @@ func pollJobs(q *queue) {
 		if err != nil {
 			panic(err)
 		}
-
 		parsedRows := make([]scheduler.Job, 0, 20)
 		for rows.Next() {
 			job, err := scheduler.ParseJobRow(rows)

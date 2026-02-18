@@ -2,13 +2,32 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"os"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 var db *sql.DB
 
+func createDbFolder() error {
+	if _, err := os.Stat("data"); os.IsNotExist(err) {
+		if err := os.Mkdir("data", 0755); err != nil {
+			return err
+		}
+		fmt.Println("Data folder created successfully")
+	} else {
+		return err
+	}
+	return nil
+
+}
+
 func ConnectToDb() {
+	if err := createDbFolder(); err != nil {
+		panic(err)
+	}
+
 	connection, err := sql.Open("sqlite3", "./data/test.db?_journal_mode=WAL")
 	if err != nil {
 		panic(err)

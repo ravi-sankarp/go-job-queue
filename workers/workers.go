@@ -15,8 +15,6 @@ import (
 	"github.com/ravi-sankarp/go-job-queue/scheduler"
 )
 
-var MAX_WORKERS int = 4
-
 type status string
 
 const (
@@ -24,7 +22,10 @@ const (
 	RUNNING      status = "RUNNING"
 	SUCCESS      status = "SUCCESS"
 	FAILED       status = "FAILED"
+	ABORTED      status = "ABORTED"
 	LOCK_TIMEOUT int    = 60
+	MAX_WORKERS  int    = 4
+	MAX_RETIRES  int    = 5
 )
 
 type HttpResponse struct {
@@ -62,12 +63,12 @@ func pollJobs(q *queue) {
 									  WHERE id IN
 									  (
 									   SELECT id FROM jobs
-									   WHERE status <> ?
+									   WHERE status NOT IN ( ?, ? )
 									   AND scheduled_at <= datetime('now')
 									   AND (locked_at IS NULL OR locked_at < strftime('%s', 'now') - ?)
 									   )
 									   RETURNING id, title, endpoint, method, payload, scheduled_at,
-									   created_on, status, retries, error_info, updated_on`, SUCCESS, LOCK_TIMEOUT)
+									   created_on, status, retries, error_info, updated_on`, SUCCESS, ABORTED, LOCK_TIMEOUT)
 		if err != nil {
 			panic(err)
 		}
@@ -93,11 +94,20 @@ func pollJobs(q *queue) {
 
 }
 
-func updateJob(id int, status status, err string) error {
+func updateJob(id int, status status, retries *int, err string) error {
 	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status))
-	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
-							   WHERE id = ?`, status, err, id)
+	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, retries = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
+							   WHERE id = ?`, status, retries, err, id)
 	return error
+}
+
+func updateFailedJob(job *scheduler.Job, msg string) error {
+	status := FAILED
+	if job.Retries == MAX_RETIRES {
+		status = ABORTED
+	}
+	job.Retries++
+	return updateJob(job.Id, status, &job.Retries, msg)
 }
 
 func worker(q *queue) {
@@ -110,13 +120,13 @@ func worker(q *queue) {
 		req, err := http.NewRequest(job.Method, job.Endpoint, bytes.NewReader([]byte(job.Payload)))
 
 		if err != nil {
-			updateJob(job.Id, FAILED, err.Error())
+			updateFailedJob(job, err.Error())
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			updateJob(job.Id, FAILED, err.Error())
+			updateFailedJob(job, err.Error())
 			continue
 		}
 		if strings.HasPrefix(resp.Status, "2") == false {
@@ -130,10 +140,10 @@ func worker(q *queue) {
 				msg = err.Error()
 			}
 
-			updateJob(job.Id, FAILED, msg)
+			updateFailedJob(job, msg)
 			continue
 		}
-		updateJob(job.Id, SUCCESS, "")
+		updateJob(job.Id, SUCCESS, nil, "")
 		resp.Body.Close()
 	}
 }

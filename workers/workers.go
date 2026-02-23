@@ -2,7 +2,9 @@ package workers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +28,7 @@ const (
 	LOCK_TIMEOUT int    = 60
 	MAX_WORKERS  int    = 4
 	MAX_RETIRES  int    = 5
+	JOB_TIMEOUT  int    = 10
 )
 
 type HttpResponse struct {
@@ -95,19 +98,53 @@ func pollJobs(q *queue) {
 }
 
 func updateJob(id int, status status, retries *int, err string) error {
-	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status))
+	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status) + " error = " + err)
 	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, retries = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
 							   WHERE id = ?`, status, retries, err, id)
 	return error
 }
 
-func updateFailedJob(job *scheduler.Job, msg string) error {
+func updateFailedJob(job *scheduler.Job, err error) error {
+	msg := err.Error()
+	if errors.Is(err, context.DeadlineExceeded) {
+		msg = "Error timeout"
+	}
 	status := FAILED
 	if job.Retries == MAX_RETIRES {
 		status = ABORTED
 	}
 	job.Retries++
+
 	return updateJob(job.Id, status, &job.Retries, msg)
+}
+
+func executeJobRequest(job *scheduler.Job, ctx context.Context) error {
+	fmt.Println("Executing job with title " + job.Title + " with id " + strconv.Itoa(job.Id))
+	req, err := http.NewRequestWithContext(ctx, job.Method, job.Endpoint, bytes.NewReader([]byte(job.Payload)))
+
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if strings.HasPrefix(resp.Status, "2") == false {
+		var msg string
+		var result HttpResponse
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			msg = err.Error()
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			msg = err.Error()
+		}
+
+		return errors.New(msg)
+	}
+	return nil
 }
 
 func worker(q *queue) {
@@ -116,35 +153,15 @@ func worker(q *queue) {
 		if job == nil {
 			continue
 		}
-		fmt.Println("Executing job with title " + job.Title + " with id " + strconv.Itoa(job.Id))
-		req, err := http.NewRequest(job.Method, job.Endpoint, bytes.NewReader([]byte(job.Payload)))
-
-		if err != nil {
-			updateFailedJob(job, err.Error())
+		ctx, cancel := context.WithTimeout(context.Background(), (time.Duration(JOB_TIMEOUT))*time.Second)
+		if err := executeJobRequest(job, ctx); err != nil {
+			updateFailedJob(job, err)
+			cancel()
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			updateFailedJob(job, err.Error())
-			continue
-		}
-		if strings.HasPrefix(resp.Status, "2") == false {
-			var msg string
-			var result HttpResponse
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				msg = err.Error()
-			}
-			if err := json.Unmarshal(body, &result); err != nil {
-				msg = err.Error()
-			}
-
-			updateFailedJob(job, msg)
-			continue
-		}
+		cancel()
 		updateJob(job.Id, SUCCESS, nil, "")
-		resp.Body.Close()
+
 	}
 }
 

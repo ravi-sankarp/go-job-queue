@@ -42,17 +42,24 @@ func pollJobs(ctx context.Context, ch chan<- *scheduler.Job) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		now := time.Now().Unix()
+		leaseCutOff := now - int64(LOCK_TIMEOUT)
+		start := time.Now()
 		rows, err := db.GetDb().QueryContext(ctx, `UPDATE jobs
 									  SET locked_at = strftime('%s', 'now')
 									  WHERE id IN
 									  (
 									   SELECT id FROM jobs
-									   WHERE status NOT IN ( ?, ? )
-									   AND system_scheduled_at <= strftime('%s', 'now')
-									   AND (locked_at IS NULL OR locked_at < strftime('%s', 'now') - ?)
+									   WHERE system_scheduled_at <= ? 
+									   AND locked_at < ?
+									   AND status IN ('IDLE' , 'FAILED')
+									   ORDER BY system_scheduled_at  ASC
+									   LIMIT 10
 									   )
 									   RETURNING id, title, endpoint, method, payload, scheduled_at, system_scheduled_at,
-									   created_on, status, retries, error_info, updated_on`, SUCCESS, ABORTED, LOCK_TIMEOUT)
+									   created_on, status, retries, error_info, updated_on`, now, leaseCutOff)
+		taken := time.Since(start)
+		fmt.Println("\n \n ******* \n Time taken for query " + taken.String())
 		if err != nil {
 			panic(err)
 		}

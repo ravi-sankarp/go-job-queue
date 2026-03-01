@@ -1,6 +1,6 @@
-scheduled_at=$(date -u -d "+1 second" +"%Y-%m-%dT%H:%M:%S.%3NZ")
 
-for i in {1..10}; do
+for i in {1..10000}; do
+  scheduled_at=$(date -u -d "+${i} seconds" +"%Y-%m-%dT%H:%M:%S.%3NZ")
   curl --request POST \
     --url http://localhost:8000/jobs/ \
     --header 'content-type: application/json' \

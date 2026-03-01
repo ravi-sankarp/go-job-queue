@@ -3,6 +3,7 @@ package workers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ravi-sankarp/go-job-queue/db"
@@ -36,11 +38,11 @@ type HttpResponse struct {
 	message string
 }
 
-func pollJobs(ch chan<- *scheduler.Job) {
+func pollJobs(ctx context.Context, ch chan<- *scheduler.Job) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		rows, err := db.GetDb().Query(`UPDATE jobs
+		rows, err := db.GetDb().QueryContext(ctx, `UPDATE jobs
 									  SET locked_at = strftime('%s', 'now')
 									  WHERE id IN
 									  (
@@ -70,17 +72,21 @@ func pollJobs(ch chan<- *scheduler.Job) {
 
 }
 
-func updateJob(id int, status status, systemScheduled int64, retries *int, err string) error {
-	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status) + " error = " + err)
-	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, system_scheduled_at =?, retries = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
-							   WHERE id = ?`, status, systemScheduled, retries, err, id)
-	return error
+func updateJob(ctx context.Context, id int, status status, systemScheduled int64, retries *int, err error) error {
+	var errorInfo sql.NullString
+	if err != nil {
+		errorInfo.String = err.Error()
+		errorInfo.Valid = true
+	}
+	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status) + " error = " + errorInfo.String)
+	_, execErr := db.GetDb().ExecContext(ctx, `UPDATE jobs SET status = ?, system_scheduled_at =?, retries = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
+							   WHERE id = ?`, status, systemScheduled, retries, errorInfo, id)
+	return execErr
 }
 
-func updateFailedJob(job *scheduler.Job, err error) error {
-	msg := err.Error()
+func updateFailedJob(ctx context.Context, job *scheduler.Job, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
-		msg = "Error timeout"
+		err = errors.New("Error timeout")
 	}
 	job.Retries++
 	status := FAILED
@@ -89,14 +95,13 @@ func updateFailedJob(job *scheduler.Job, err error) error {
 	} else {
 		retryAfter := time.Duration(BASE_BACKOFF * (1 << job.Retries))
 		job.System_scheduled_at = time.Now().Unix() + int64(retryAfter)
-		fmt.Println("current Time " + time.Now().UTC().String() + " Scheduled at " + time.Unix(job.System_scheduled_at, 0).UTC().String())
 	}
 
-	return updateJob(job.Id, status, job.System_scheduled_at,
-		&job.Retries, msg)
+	return updateJob(ctx, job.Id, status, job.System_scheduled_at,
+		&job.Retries, err)
 }
 
-func executeJobRequest(job *scheduler.Job, ctx context.Context) error {
+func executeJobRequest(ctx context.Context, job *scheduler.Job) error {
 	fmt.Println("Executing job with title " + job.Title + " with id " + strconv.Itoa(job.Id))
 	req, err := http.NewRequestWithContext(ctx, job.Method, job.Endpoint, bytes.NewReader([]byte(job.Payload)))
 
@@ -122,16 +127,18 @@ func executeJobRequest(job *scheduler.Job, ctx context.Context) error {
 
 		return errors.New(msg)
 	}
-	return nil
+	return updateJob(ctx, job.Id, SUCCESS, job.System_scheduled_at,
+		nil, nil)
 }
 
-func worker(ch <-chan *scheduler.Job) {
+func worker(ctx context.Context, ch <-chan *scheduler.Job, wg *sync.WaitGroup) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Fatal("Worker Panic")
 			log.Fatal(r)
 		}
 	}()
+	defer wg.Done()
 	for {
 		select {
 		case job, ok := <-ch:
@@ -145,27 +152,31 @@ func worker(ch <-chan *scheduler.Job) {
 						fmt.Println(r)
 					}
 				}()
-				ctx, cancel := context.WithTimeout(context.Background(), (time.Duration(JOB_TIMEOUT))*time.Second)
+				timeoutCtx, cancel := context.WithTimeout(ctx, (time.Duration(JOB_TIMEOUT))*time.Second)
 				defer cancel()
-				if err := executeJobRequest(job, ctx); err != nil {
-					updateFailedJob(job, err)
+				if err := executeJobRequest(timeoutCtx, job); err != nil {
+					updateFailedJob(ctx, job, err)
 					return
 				}
 			}()
-		default:
-			continue
+		case <-ctx.Done():
+			fmt.Println("Shutting down woker due to ctx cancel")
+			return
 		}
 	}
 
 }
-func startWorkers(ch <-chan *scheduler.Job) {
-	for i := 0; i < MAX_WORKERS; i++ {
-		go worker(ch)
+func startWorkers(ctx context.Context, ch <-chan *scheduler.Job, wg *sync.WaitGroup) {
+	for i := range MAX_WORKERS {
+		wg.Add(i)
+		go worker(ctx, ch, wg)
 	}
 }
 
-func Start() {
+func Start(ctx context.Context) {
 	ch := make(chan *scheduler.Job, 10)
-	go pollJobs(ch)
-	startWorkers(ch)
+	wg := sync.WaitGroup{}
+	go pollJobs(ctx, ch)
+	startWorkers(ctx, ch, &wg)
+	wg.Wait()
 }

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -39,8 +40,8 @@ func GetDb() *sql.DB {
 	return db
 }
 
-func SeedTables() {
-	db.Exec(`CREATE TABLE IF NOT EXISTS jobs(id integer primary key, title varchar(50) NOT NULL,
+func SeedTables(ctx context.Context) {
+	db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS jobs(id integer primary key, title varchar(50) NOT NULL,
 	 	endpoint varchar(50) NOT NULL, method varchar(6) NOT NULL, payload TEXT NOT NULL,
 		scheduled_at INTEGER NOT NULL, system_scheduled_at INTEGER NOT NULL, locked_at INTEGER, created_on TEXT NOT NULL DEFAULT(datetime('now')),
 		status VARCHAR(10) NOT NULL CHECK (status IN ('IDLE', 'RUNNING','SUCCESS', 'FAILED', 'ABORTED' )) DEFAULT 'IDLE',

@@ -141,17 +141,16 @@ func worker(ch <-chan *scheduler.Job) {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Fatal("Worker Panic")
-						log.Fatal(r)
+						fmt.Println("Worker Panic")
+						fmt.Println(r)
 					}
 				}()
 				ctx, cancel := context.WithTimeout(context.Background(), (time.Duration(JOB_TIMEOUT))*time.Second)
+				defer cancel()
 				if err := executeJobRequest(job, ctx); err != nil {
 					updateFailedJob(job, err)
-					cancel()
 					return
 				}
-				cancel()
 			}()
 		default:
 			continue

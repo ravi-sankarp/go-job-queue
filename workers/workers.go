@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ravi-sankarp/go-job-queue/db"
@@ -28,6 +28,7 @@ const (
 	LOCK_TIMEOUT int    = 60
 	MAX_WORKERS  int    = 4
 	MAX_RETIRES  int    = 5
+	BASE_BACKOFF int    = 1
 	JOB_TIMEOUT  int    = 10
 )
 
@@ -35,29 +36,7 @@ type HttpResponse struct {
 	message string
 }
 
-type queue struct {
-	jobs  []scheduler.Job
-	mutex sync.Mutex
-}
-
-func (q *queue) dequeue() *scheduler.Job {
-	if q.len() == 0 {
-		return nil
-	}
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	if q.len() == 0 {
-		return nil
-	}
-	job := q.jobs[0]
-	q.jobs = q.jobs[1:]
-	return &job
-}
-func (q *queue) len() int {
-	return len(q.jobs)
-}
-
-func pollJobs(q *queue) {
+func pollJobs(ch chan<- *scheduler.Job) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -67,40 +46,34 @@ func pollJobs(q *queue) {
 									  (
 									   SELECT id FROM jobs
 									   WHERE status NOT IN ( ?, ? )
-									   AND scheduled_at <= datetime('now')
+									   AND system_scheduled_at <= strftime('%s', 'now')
 									   AND (locked_at IS NULL OR locked_at < strftime('%s', 'now') - ?)
 									   )
-									   RETURNING id, title, endpoint, method, payload, scheduled_at,
+									   RETURNING id, title, endpoint, method, payload, scheduled_at, system_scheduled_at,
 									   created_on, status, retries, error_info, updated_on`, SUCCESS, ABORTED, LOCK_TIMEOUT)
 		if err != nil {
 			panic(err)
 		}
-		parsedRows := make([]scheduler.Job, 0, 20)
 		for rows.Next() {
 			job, err := scheduler.ParseJobRow(rows)
 			if err != nil {
 				panic(err)
 			}
-			parsedRows = append(parsedRows, job)
+			ch <- &job
 		}
 
 		if err := rows.Err(); err != nil {
 			panic(err)
 		}
 
-		q.mutex.Lock()
-		q.jobs = append(q.jobs, parsedRows...)
-		q.mutex.Unlock()
-		rows.Close()
-
 	}
 
 }
 
-func updateJob(id int, status status, retries *int, err string) error {
+func updateJob(id int, status status, systemScheduled int64, retries *int, err string) error {
 	fmt.Println("Updating job with id = " + strconv.Itoa(id) + " status = " + string(status) + " error = " + err)
-	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, retries = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
-							   WHERE id = ?`, status, retries, err, id)
+	_, error := db.GetDb().Exec(`UPDATE jobs SET status = ?, system_scheduled_at =?, retries = ?, error_info = ?, updated_on = datetime('now'), locked_at = NULL
+							   WHERE id = ?`, status, systemScheduled, retries, err, id)
 	return error
 }
 
@@ -109,13 +82,18 @@ func updateFailedJob(job *scheduler.Job, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		msg = "Error timeout"
 	}
+	job.Retries++
 	status := FAILED
 	if job.Retries == MAX_RETIRES {
 		status = ABORTED
+	} else {
+		retryAfter := time.Duration(BASE_BACKOFF * (1 << job.Retries))
+		job.System_scheduled_at = time.Now().Unix() + int64(retryAfter)
+		fmt.Println("current Time " + time.Now().UTC().String() + " Scheduled at " + time.Unix(job.System_scheduled_at, 0).UTC().String())
 	}
-	job.Retries++
 
-	return updateJob(job.Id, status, &job.Retries, msg)
+	return updateJob(job.Id, status, job.System_scheduled_at,
+		&job.Retries, msg)
 }
 
 func executeJobRequest(job *scheduler.Job, ctx context.Context) error {
@@ -147,34 +125,48 @@ func executeJobRequest(job *scheduler.Job, ctx context.Context) error {
 	return nil
 }
 
-func worker(q *queue) {
+func worker(ch <-chan *scheduler.Job) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Fatal("Worker Panic")
+			log.Fatal(r)
+		}
+	}()
 	for {
-		job := q.dequeue()
-		if job == nil {
+		select {
+		case job, ok := <-ch:
+			if !ok {
+				return
+			}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Fatal("Worker Panic")
+						log.Fatal(r)
+					}
+				}()
+				ctx, cancel := context.WithTimeout(context.Background(), (time.Duration(JOB_TIMEOUT))*time.Second)
+				if err := executeJobRequest(job, ctx); err != nil {
+					updateFailedJob(job, err)
+					cancel()
+					return
+				}
+				cancel()
+			}()
+		default:
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), (time.Duration(JOB_TIMEOUT))*time.Second)
-		if err := executeJobRequest(job, ctx); err != nil {
-			updateFailedJob(job, err)
-			cancel()
-			continue
-		}
-		cancel()
-		updateJob(job.Id, SUCCESS, nil, "")
-
 	}
-}
 
-func startWorkers(q *queue) {
+}
+func startWorkers(ch <-chan *scheduler.Job) {
 	for i := 0; i < MAX_WORKERS; i++ {
-		go worker(q)
+		go worker(ch)
 	}
 }
 
 func Start() {
-	q := &queue{
-		jobs: make([]scheduler.Job, 0, MAX_WORKERS),
-	}
-	go pollJobs(q)
-	startWorkers(q)
+	ch := make(chan *scheduler.Job, 10)
+	go pollJobs(ch)
+	startWorkers(ch)
 }

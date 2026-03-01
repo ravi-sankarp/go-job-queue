@@ -18,31 +18,33 @@ type JobCreate struct {
 }
 
 type DbJob struct {
-	Id           int
-	Title        string
-	Endpoint     string
-	Method       string
-	Payload      string
-	Scheduled_at string
-	Created_on   string
-	Status       string
-	Retries      sql.NullInt32
-	Error_Info   sql.NullString
-	Updated_on   sql.NullString
+	Id                  int
+	Title               string
+	Endpoint            string
+	Method              string
+	Payload             string
+	Scheduled_at        int64
+	System_Scheduled_at int64
+	Created_on          string
+	Status              string
+	Retries             sql.NullInt32
+	Error_Info          sql.NullString
+	Updated_on          sql.NullString
 }
 
 type Job struct {
-	Id           int    `json:"id"`
-	Title        string `json:"title"`
-	Endpoint     string `json:"endpoint"`
-	Method       string `json:"method"`
-	Payload      string `json:"payload"`
-	Scheduled_at string `json:"scheduled_at"`
-	Created_on   string `json:"created_on"`
-	Status       string `json:"status"`
-	Retries      int    `json:"retries"`
-	Error_Info   string `json.error_info`
-	Updated_on   string `json:"updated_on"`
+	Id                  int    `json:"id"`
+	Retries             int    `json:"retries"`
+	Title               string `json:"title"`
+	Endpoint            string `json:"endpoint"`
+	Method              string `json:"method"`
+	Payload             string `json:"payload"`
+	Scheduled_at        string `json:"scheduled_at"`
+	System_scheduled_at int64  `json:"-"`
+	Created_on          string `json:"created_on"`
+	Status              string `json:"status"`
+	Error_Info          string `json:"error_info"`
+	Updated_on          string `json:"updated_on"`
 }
 type Response struct {
 	Error   string `json:"error"`
@@ -57,21 +59,22 @@ type DbRow interface {
 func ParseJobRow(row DbRow) (Job, error) {
 	var job DbJob
 	if err := row.Scan(&job.Id, &job.Title, &job.Endpoint, &job.Method, &job.Payload,
-		&job.Scheduled_at, &job.Created_on, &job.Status, &job.Retries, &job.Error_Info, &job.Updated_on); err != nil {
+		&job.Scheduled_at, &job.System_Scheduled_at, &job.Created_on, &job.Status, &job.Retries, &job.Error_Info, &job.Updated_on); err != nil {
 		return Job{}, err
 	}
 	finalJob := Job{
-		Id:           job.Id,
-		Title:        job.Title,
-		Endpoint:     job.Endpoint,
-		Method:       job.Method,
-		Payload:      job.Payload,
-		Scheduled_at: job.Scheduled_at,
-		Created_on:   job.Created_on,
-		Status:       job.Status,
-		Retries:      int(job.Retries.Int32),
-		Error_Info:   job.Error_Info.String,
-		Updated_on:   job.Updated_on.String,
+		Id:                  job.Id,
+		Title:               job.Title,
+		Endpoint:            job.Endpoint,
+		Method:              job.Method,
+		Payload:             job.Payload,
+		Scheduled_at:        time.Unix(job.Scheduled_at, 0).UTC().String(),
+		System_scheduled_at: job.System_Scheduled_at,
+		Created_on:          job.Created_on,
+		Status:              job.Status,
+		Retries:             int(job.Retries.Int32),
+		Error_Info:          job.Error_Info.String,
+		Updated_on:          job.Updated_on.String,
 	}
 	return finalJob, nil
 }
@@ -84,9 +87,9 @@ func CreateJob(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(Response{Error: err.Error(), Success: false})
 		return
 	}
-	jobCreate.Scheduled_at = jobCreate.Scheduled_at.UTC()
-	if _, err := db.GetDb().Exec("INSERT INTO jobs (title, endpoint, method, payload, scheduled_at) values (?, ?, ?, ?, ?)",
-		jobCreate.Title, jobCreate.Endpoint, jobCreate.Method, jobCreate.Payload, jobCreate.Scheduled_at); err != nil {
+	scheduledAt := jobCreate.Scheduled_at.Unix()
+	if _, err := db.GetDb().Exec("INSERT INTO jobs (title, endpoint, method, payload, scheduled_at, system_scheduled_at) values (?, ?, ?, ?, ?, ?)",
+		jobCreate.Title, jobCreate.Endpoint, jobCreate.Method, jobCreate.Payload, scheduledAt, scheduledAt); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Error: err.Error(), Success: false})
 		return
@@ -100,7 +103,7 @@ func GetJobs(w http.ResponseWriter, r *http.Request) {
 	jobId := r.URL.Query().Get("id")
 
 	if jobId != "" {
-		row := db.GetDb().QueryRow(`SELECT id, title, endpoint, method, payload, scheduled_at,
+		row := db.GetDb().QueryRow(`SELECT id, title, endpoint, method, payload, scheduled_at, system_scheduled_at,
 		created_on, status, retries, error_info, updated_on  FROM jobs WHERE id = ?`, jobId)
 		if row.Err() != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -124,7 +127,7 @@ func GetJobs(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(Response{Success: true, Data: job})
 
 	} else {
-		rows, err := db.GetDb().Query(`SELECT id, title, endpoint, method, payload, scheduled_at,
+		rows, err := db.GetDb().Query(`SELECT id, title, endpoint, method, payload, scheduled_at, system_scheduled_at,
 		created_on, status, retries, error_info, updated_on  FROM jobs`)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
